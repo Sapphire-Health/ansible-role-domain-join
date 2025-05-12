@@ -1,0 +1,66 @@
+- name: Install the required packages
+  yum:
+    name:
+      - realmd
+      - oddjob-mkhomedir
+      - sssd-krb5
+      - sssd-ad
+      - krb5-workstation
+      - oddjob
+      - sssd
+      - python3-pexpect
+      # - samba-common-tools
+    state: present
+- name: Check if server is already a domain member
+  shell: "realm list | grep -i -q {{ ADDomain }} && echo -n JOINED || echo -n NOTJOINED"
+  register: domain_check
+  changed_when: domain_check.stdout != 'JOINED'
+- name: Show domain status
+  debug:
+    msg: "{{domain_check}}"
+# - name: Install pexpect using pip
+#   pip:
+#     name: pexpect
+#     executable: pip3
+#   when: domain_check.changed
+- name: Join system to AD and add the computer object in the Linux OU
+  expect:
+    command: "/bin/bash -c \"/usr/sbin/realm join -v {% if ou_path is defined}--computer-ou='{{ ou_path }}'{% endif %} --user='{{ ADJoinUsername }}' {{ ADDomain }}\""
+    timeout: 30
+    responses:
+      Password for *: "{{ ADJoinPassword }}"
+  notify: Restart auth services
+  when: domain_check.changed
+- name: Apply sssd.conf configs
+  ansible.builtin.lineinfile:
+    path: /etc/sssd/sssd.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    insertafter: "{{ item.insertafter }}"
+  notify: Restart auth services
+  loop: "{{ domain_join_rhel_sssd_conf }}"
+- name: Configure ad_enabled_domains in sssd.conf
+  ansible.builtin.lineinfile:
+    path: /etc/sssd/sssd.conf
+    regexp: '^ad_enabled_domains = '
+    line: "ad_enabled_domains = {{ ADDomain | lower }}"
+    insertafter: '^\[domain/(.*?)\]$'
+  notify: Restart auth services
+- name: Configure udp_preference_limit in /etc/krb5.conf
+  ansible.builtin.lineinfile:
+    path: /etc/krb5.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    insertafter: "{{ item.insertafter }}"
+  notify: Restart auth services
+  loop: "{{ domain_join_rhel_krb5_conf }}"
+- name: Start and enable the realmd service
+  service:
+    name: realmd
+    state: started
+    enabled: yes
+- name: Start and enable the sssd service
+  service:
+    name: sssd
+    state: started
+    enabled: yes

@@ -1,0 +1,64 @@
+
+- name: Install the required packages
+  apt:
+    name: 
+      - realmd
+      - sssd-krb5
+      - sssd-ad
+      - sssd
+      # - python3-pip
+      - packagekit
+    update_cache: yes
+    state: present
+- name: Check if server is already a domain member
+  shell: "realm list | grep -i -q {{ ADDomain }} && echo -n JOINED || echo -n NOTJOINED"
+  register: domain_check
+  changed_when: domain_check.stdout != 'JOINED'
+# - name: Install pexpect using pip
+#   pip:
+#     name: pexpect
+#   when: domain_check.changed
+- name: Join system to AD and add the computer object in the Linux OU
+  expect:
+    command: "/bin/bash -c \"/usr/sbin/realm join -v -U {{ ADJoinUsername }} {{ ADDomain }}\""
+    timeout: 30
+    responses:
+      Password for *: "{{ ADJoinPassword }}"
+  notify: Restart auth services
+  when: domain_check.changed
+- name: Configure sssd.conf
+  template:
+    src: sssd.j2
+    dest: /etc/sssd/sssd.conf
+  notify: Restart auth services
+- name: Enable home directory creation on login
+  block:
+    - name: Write /usr/share/pam-configs/mkhomedir file
+      template:
+        src: mkhomedir.j2
+        dest: /usr/share/pam-configs/mkhomedir
+      notify: Restart auth services
+    - name: Enable /usr/share/pam-configs/mkhomedir config
+      command: pam-auth-update --enable mkhomedir
+      notify: Restart auth services
+- name: Allow AD group to sudo
+  template:
+    src: sudo-ad-group.j2
+    dest: /etc/sudoers.d/{{ ADAdminGroup|replace(' ', '_') }}
+- name: Insert/Update "Match User" configuration block in /etc/ssh/sshd_config
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    block: |
+      AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys
+      AuthorizedKeysCommandUser root
+  notify: Restart auth services
+- name: Start and enable the realmd service
+  service:
+    name: realmd
+    state: started
+    enabled: yes
+- name: Start and enable the sssd service
+  service:
+    name: sssd
+    state: started
+    enabled: yes

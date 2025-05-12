@@ -1,0 +1,7 @@
+- name: Restart auth services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - sssd
+    - realmd

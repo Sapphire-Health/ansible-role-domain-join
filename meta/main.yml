@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  license: MIT
+  min_ansible_version: "2.10"
+  role_name: domain_join
+  author: Lyas Spiehler
+  description: Ansible role for joining linux servers to an Active Directory domain
+  company: Sapphire Health
+# collections: []
+# dependencies: []
+...
