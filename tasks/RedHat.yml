@@ -1,5 +1,5 @@
 - name: Install the required packages
-  yum:
+  ansible.builtin.yum:
     name:
       - realmd
       - oddjob-mkhomedir
@@ -11,41 +11,44 @@
       - python3-pexpect
       # - samba-common-tools
     state: present
+
 - name: Check if server is already a domain member
-  shell: "realm list | grep -i -q {{ ADDomain }} && echo -n JOINED || echo -n NOTJOINED"
+  ansible.builtin.shell: "realm list | grep -i -q {{ lookup('ansible.builtin.env', 'DOMAIN_NAME', default=domain_name) }} && echo -n JOINED || echo -n NOTJOINED"
   register: domain_check
-  changed_when: domain_check.stdout != 'JOINED'
+  changed_when: false
+
 - name: Show domain status
-  debug:
-    msg: "{{domain_check}}"
-# - name: Install pexpect using pip
-#   pip:
-#     name: pexpect
-#     executable: pip3
-#   when: domain_check.changed
+  ansible.builtin.debug:
+    msg: "{{ domain_check }}"
+
+- name: Normalize username
+  ansible.builtin.set_fact:
+    normalized_domain_admin: "{{ lookup('ansible.builtin.env', 'DOMAIN_ADMIN_USER', default=domain_admin_user) | regex_replace('.*[\\\\@]', '') | lower }}"
+
+- name: Set realm join command
+  set_fact:
+    realm_join_cmd: >
+      /usr/sbin/realm join -v
+      {% if ou_path is defined %}--computer-ou='{{ ou_path }}' {% endif %}
+      -U {{ normalized_domain_admin }}
+      {{ lookup('ansible.builtin.env', 'DOMAIN_NAME', default=domain_name) | lower }}
+  when: domain_check.stdout != 'JOINED'
+
 - name: Join system to AD and add the computer object in the Linux OU
-  expect:
-    command: "/bin/bash -c \"/usr/sbin/realm join -v {% if ou_path is defined}--computer-ou='{{ ou_path }}'{% endif %} --user='{{ ADJoinUsername }}' {{ ADDomain }}\""
+  ansible.builtin.expect:
+    command: "/bin/bash -c \"{{ realm_join_cmd }}\""
     timeout: 30
     responses:
-      Password for *: "{{ ADJoinPassword }}"
+      Password for *: "{{ lookup('ansible.builtin.env', 'DOMAIN_ADMIN_PASSWORD', default=domain_admin_password) }}"
   notify: Restart auth services
-  when: domain_check.changed
-- name: Apply sssd.conf configs
-  ansible.builtin.lineinfile:
-    path: /etc/sssd/sssd.conf
-    regexp: "{{ item.regexp }}"
-    line: "{{ item.line }}"
-    insertafter: "{{ item.insertafter }}"
+  when: domain_check.stdout != 'JOINED'
+
+- name: Configure sssd.conf
+  ansible.builtin.template:
+    src: "{{ sssd_template | default('sssd.j2') }}"
+    dest: /etc/sssd/sssd.conf
   notify: Restart auth services
-  loop: "{{ domain_join_rhel_sssd_conf }}"
-- name: Configure ad_enabled_domains in sssd.conf
-  ansible.builtin.lineinfile:
-    path: /etc/sssd/sssd.conf
-    regexp: '^ad_enabled_domains = '
-    line: "ad_enabled_domains = {{ ADDomain | lower }}"
-    insertafter: '^\[domain/(.*?)\]$'
-  notify: Restart auth services
+
 - name: Configure udp_preference_limit in /etc/krb5.conf
   ansible.builtin.lineinfile:
     path: /etc/krb5.conf
@@ -54,13 +57,15 @@
     insertafter: "{{ item.insertafter }}"
   notify: Restart auth services
   loop: "{{ domain_join_rhel_krb5_conf }}"
+
 - name: Start and enable the realmd service
-  service:
+  ansible.builtin.service:
     name: realmd
     state: started
     enabled: yes
+
 - name: Start and enable the sssd service
-  service:
+  ansible.builtin.service:
     name: sssd
     state: started
     enabled: yes
